@@ -1,0 +1,5 @@
+node_modules/
+_scratch/
+_backup/
+versions/
+test-results/
