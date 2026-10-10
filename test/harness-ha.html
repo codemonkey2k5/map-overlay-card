@@ -1,0 +1,42 @@
+<!doctype html><html><head><meta charset="utf-8">
+<style>
+html{--primary-background-color:#111;--card-background-color:#1c1c1c;--primary-text-color:#e1e1e1;--ha-card-border-radius:12px}
+body{margin:0;background:var(--primary-background-color);color:var(--primary-text-color);font-family:Roboto,sans-serif}
+</style></head><body>
+<ha-shell></ha-shell>
+<script type="module">
+// Minimal stand-ins for HA elements (each with its own shadow root) to mimic how HA mounts cards.
+customElements.define("ha-card", class extends HTMLElement { constructor(){super();this.attachShadow({mode:"open"}).innerHTML=`<style>:host{display:block;background:var(--card-background-color);border-radius:var(--ha-card-border-radius)}</style><slot></slot>`;} });
+customElements.define("hui-panel-view", class extends HTMLElement { constructor(){super();this.attachShadow({mode:"open"}).innerHTML=`<style>:host{display:block;height:100%}</style><slot></slot>`;} });
+const q = new URLSearchParams(location.search);
+await import("../dist/map-overlay-card.js");
+const root = document.querySelector("ha-shell").attachShadow({mode:"open"});
+root.innerHTML = `<div id="view" style="height:100vh"></div>`;
+const viewHost = root.getElementById("view");
+// ?cfg=<json>  ?key=<tomtom>  ?home=lat,lon (hass.config; neutral test location by default)  ?people=1 (fake entities)
+const cfg = { type: "custom:map-overlay-card", ...(q.get("cfg") ? JSON.parse(q.get("cfg")) : {}) };
+if (q.get("key")) cfg.tomtom_key = q.get("key");
+const [hlat, hlon] = (q.get("home") || "37.104,-113.584").split(",").map(Number);
+const card = document.createElement("map-overlay-card");
+window.__cfgError = null;
+try { card.setConfig(cfg); } catch (e) { window.__cfgError = e.message; }
+const pv = document.createElement("hui-panel-view");
+pv.appendChild(card);
+// Mount unslotted first (zero size), slot later, like HA's view rendering.
+const host = document.createElement("div"); const sr = host.attachShadow({mode:"open"}); sr.innerHTML = `<div style="height:100%"></div>`;
+host.style.height = "100%"; host.appendChild(pv); viewHost.appendChild(host);
+setTimeout(() => sr.firstChild.appendChild(document.createElement("slot")), 600);
+// Fake, made-up entities only (no real people).
+const avatar = "data:image/svg+xml," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><rect width="40" height="40" fill="#7e57c2"/><circle cx="20" cy="15" r="7" fill="#fff"/><path d="M6 38c2-9 8-12 14-12s12 3 14 12z" fill="#fff"/></svg>`);
+const states = q.get("people") ? {
+  "person.alex_demo": { state: "not_home", attributes: { friendly_name: "Alex Demo", latitude: hlat + 0.03, longitude: hlon - 0.06, gps_accuracy: 400, entity_picture: avatar } },
+  "person.sam_sample": { state: "not_home", attributes: { friendly_name: "Sam Sample", latitude: hlat - 0.05, longitude: hlon + 0.05, gps_accuracy: 30 } },
+  "person.no_gps": { state: "home", attributes: { friendly_name: "No GPS" } },
+  "device_tracker.demo_car": { state: "not_home", attributes: { friendly_name: "Demo Car", latitude: hlat + 0.08, longitude: hlon + 0.1 } },
+  "zone.home": { state: "0", attributes: { friendly_name: "Home", latitude: hlat, longitude: hlon, radius: 800 } },
+} : {};
+window.__setHass = (st) => { card.hass = { config: { latitude: hlat, longitude: hlon }, states: st, themes: { darkMode: true } }; };
+setTimeout(() => window.__setHass(states), 300);
+window.__events = []; document.addEventListener("hass-more-info", (e) => window.__events.push(e.detail.entityId));
+window.__card = card; window.__states = states;
+</script></body></html>
