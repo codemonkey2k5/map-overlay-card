@@ -1,11 +1,12 @@
 {
   "name": "map-overlay-card",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Home Assistant Lovelace card: one Leaflet map with TomTom traffic and animated weather radar",
   "license": "MIT",
   "private": true,
   "scripts": {
-    "build": "node build.mjs"
+    "build": "node build.mjs",
+    "test": "node test/run-test.mjs"
   },
   "dependencies": { "leaflet": "1.9.4" },
   "devDependencies": { "esbuild": "^0.24.0", "playwright-core": "^1.48.0" }

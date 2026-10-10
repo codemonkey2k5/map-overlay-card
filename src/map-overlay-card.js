@@ -1,5 +1,6 @@
 import L from "leaflet";
 import leafletCss from "leaflet/dist/leaflet.css";
+import { PICKER_PREVIEW } from "./picker-preview.js";
 
 const VERSION = typeof __VERSION__ !== "undefined" ? __VERSION__ : "dev";
 
@@ -465,8 +466,32 @@ class MapOverlayCard extends HTMLElement {
   connectedCallback() { if (this._config && !this._built) requestAnimationFrame(() => this._setup()); }
   disconnectedCallback() { this._teardown(); }
 
+  // HA's "Add card" picker (hui-card-picker) mounts a live card with the stub config and sets no preview flag
+  // (the `preview` property is only set by the card editor's live preview, where the real map is wanted).
+  // Detect the picker by the host of our shadow root and show a static sample instead of the user's map.
+  _inPicker() {
+    let n = this;
+    for (let i = 0; i < 6 && n; i++) { const host = n.getRootNode?.()?.host; if (!host) return false; if (host.localName === "hui-card-picker") return true; n = host; }
+    return false;
+  }
+
+  _renderPickerPreview() {
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    const btn = (t, on) => `<button class="${on ? "on" : ""}" tabindex="-1">${t}</button>`;
+    this.shadowRoot.innerHTML = `<style>${CARD_CSS}
+      .wrap.pv { height:180px; background:#cfe3ef url(${PICKER_PREVIEW}) center/cover no-repeat; border-radius:var(--ha-card-border-radius,12px); overflow:hidden; }
+      .wrap.pv .panel { bottom:8px; left:6px; right:6px; flex-wrap:nowrap; justify-content:center; font-size:11px; padding:4px 5px; gap:4px; }
+      .wrap.pv .panel button { padding:2px 6px; }
+      .wrap.pv { container-type:inline-size; }
+      @container (max-width: 270px) { .wrap.pv .panel { font-size:10px; gap:3px; padding:4px 3px; } .wrap.pv .panel button { padding:1px 3px; } }</style>
+      <ha-card><div class="wrap pv" role="img" aria-label="Map Overlay Card sample"><div class="panel">
+      ${btn("Radar", true)}${btn("Flow", true)}${btn("Incidents", false)}${btn("People", true)}${btn("Quakes", false)}</div></div></ha-card>`;
+    this._pickerShown = true;
+  }
+
   _setup() {
     if (this._built || !this.isConnected || !this._config) return;
+    if (this._inPicker()) { this._renderPickerPreview(); return; }
     this._built = true;
     const c = this._config;
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
