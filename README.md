@@ -6,9 +6,9 @@ A Home Assistant dashboard card that puts traffic, weather radar, people and ear
 
 ## What it does
 
-- Animated weather radar with play/pause, speed and opacity (NOAA nowCOAST, Iowa Mesonet NEXRAD or RainViewer; no key needed)
-- Live traffic flow and incidents from TomTom (free key)
-- People and device trackers as name pills with their picture; people in the same spot share one bubble
+- Animated weather radar with play/pause, speed and opacity (NOAA nowCOAST, Iowa Mesonet NEXRAD or RainViewer; no API key needed)
+- Live traffic flow and incidents from TomTom (free API key required)
+- People and device trackers as name pills with their name and picture (you can override both)
 - Earthquakes from the last 24 hours (USGS), colored by magnitude, with full details on tap
 - Your zones, a home marker, light or dark map
 - Buttons on the map to turn each layer on and off
