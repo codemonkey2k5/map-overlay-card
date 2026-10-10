@@ -20,7 +20,7 @@ A Home Assistant dashboard card that puts traffic, weather radar, people and ear
 
 1. Make sure [HACS](https://hacs.xyz/docs/use/) is installed.
 2. Click **Open in HACS** above. Home Assistant opens and asks to add the repository. Click **Add**, then **Download**.
-3. When HACS asks to reload, click **Reload**. In the phone app, close and reopen the app.
+3. When HACS asks to reload, click **Reload**. (In the phone app, close and reopen the app.)
 
 This card is not in the HACS default list yet, so it's added as a custom repository. The button above does that for you. To do it by hand: HACS > three-dot menu > **Custom repositories**, paste `https://github.com/codemonkey2k5/map-overlay-card`, pick type **Dashboard**, click **Add**.
 
