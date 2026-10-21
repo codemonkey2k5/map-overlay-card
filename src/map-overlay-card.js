@@ -364,7 +364,7 @@ class MapOverlayCard extends HTMLElement {
         const a = s.attributes || {};
         if (typeof a.latitude !== "number" || typeof a.longitude !== "number" || this._zones.has(id)) continue;
         const z = L.circle([a.latitude, a.longitude], { radius: a.radius || 100, color: id === "zone.home" ? "#03a9f4" : "#ff9800", weight: 1,
-          dashArray: a.passive ? "4 4" : null, fillOpacity: 0.1, interactive: false }).bindTooltip(a.friendly_name || id);
+          dashArray: a.passive ? "4 4" : null, fillOpacity: 0.1, interactive: false }).bindTooltip(esc(a.friendly_name || id));
         z.addTo(this._peopleLayer); this._zones.set(id, z);
       }
     }
@@ -749,7 +749,7 @@ class MapOverlayCard extends HTMLElement {
     const s = this._hass.states?.[c.home_entity];
     const lat = s?.attributes?.latitude, lon = s?.attributes?.longitude;
     if (typeof lat !== "number" || typeof lon !== "number") return;
-    if (!this._home) this._home = L.circleMarker([lat, lon], { radius: 7, color: "#fff", weight: 2, fillColor: "#2a7de1", fillOpacity: 1, zIndex: 900 }).bindTooltip(s.attributes.friendly_name || "Home").addTo(this._map);
+    if (!this._home) this._home = L.circleMarker([lat, lon], { radius: 7, color: "#fff", weight: 2, fillColor: "#2a7de1", fillOpacity: 1, zIndex: 900 }).bindTooltip(esc(s.attributes.friendly_name || "Home")).addTo(this._map);
     else this._home.setLatLng([lat, lon]);
   }
 }
