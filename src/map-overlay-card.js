@@ -17,7 +17,8 @@ const DEFAULTS = {
   flow_style: null, // auto: relative0 / relative0-dark
   incidents_style: null, // auto: s0 / s0-dark
   show_radar: true,
-  radar_source: "nowcoast", // nowcoast | nexrad | rainviewer
+  radar_source: "nowcoast", // nowcoast | nexrad | rainviewer | auto
+  radar_detail_source: "nexrad", // zoomed-in source when radar_source is auto
   radar_smoothing: false,
   radar_hours: 3,
   radar_step_minutes: 10,
@@ -54,6 +55,50 @@ const NOWCOAST_CAPS = "https://nowcoast.noaa.gov/geoserver/observations/weather_
 // IEM NEXRAD n0q-t serves archive (days), capped at 24 h here; RainViewer public API = 2 h (13 frames).
 const SOURCE_MAX_HOURS = { nowcoast: 8, nexrad: 24, rainviewer: 2 };
 const RV_API = "https://api.rainviewer.com/public/weather-maps.json";
+// RainViewer radar tiles stop at zoom 7 (weather-maps API, checked 2026-11-13).
+// Zoom 8 is the first level that would upscale them, so automatic mode switches here.
+const RADAR_AUTO_ZOOM = 8;
+const RADAR_ATTR = {
+  rainviewer: 'Weather data by <a href="https://www.rainviewer.com">RainViewer</a>',
+  nowcoast: 'Radar: <a href="https://nowcoast.noaa.gov/">NOAA nowCOAST</a>',
+  nexrad: 'NEXRAD radar: <a href="https://mesonet.agron.iastate.edu/">Iowa Environmental Mesonet</a>',
+};
+// South, north, west, east. nowCOAST's layer is the CONUS mosaic. Iowa n0q also
+// composites Alaska, Hawaii, Puerto Rico and Guam. Boxes reach about one radar past the sites.
+const RADAR_COVERAGE = {
+  nowcoast: [[22, 51, -128, -66]],
+  nexrad: [
+    [22, 52, -130, -60],
+    [51, 72, -180, -129],
+    [51, 72, 170, 180],
+    [17, 24, -162, -154],
+    [16.5, 20, -68.5, -64],
+    [12.5, 15, 144, 146],
+  ],
+};
+function radarCovers(source, lat, lon) {
+  if (typeof lat !== "number" || typeof lon !== "number") return false;
+  return (RADAR_COVERAGE[source] || []).some(([south, north, west, east]) => lat >= south && lat <= north && lon >= west && lon <= east);
+}
+// Leaflet fades each tile in over 200ms, which leaves a hole if the old radar is removed on load.
+// Draw radar tiles at full opacity on the next frame instead.
+function sharpRadarLayer(layer) {
+  layer._updateOpacity = function () {
+    if (!this._map) return;
+    L.DomUtil.setOpacity(this._container, this.options.opacity);
+    let prune = false;
+    for (const key in this._tiles) {
+      const tile = this._tiles[key];
+      if (!tile.current || !tile.loaded) continue;
+      L.DomUtil.setOpacity(tile.el, 1);
+      if (tile.active) prune = true;
+      else this._onOpaqueTile(tile);
+      tile.active = true;
+    }
+    if (prune && !this._noPrune) this._pruneTiles();
+  };
+  return layer;
+}
 
 function fail(msg) { throw new Error(`map-overlay-card: ${msg}`); }
 function num(cfg, k, min, max) {
@@ -91,11 +136,13 @@ export function validateConfig(input) {
     if (!c.entities.length) c.entities = null;
   }
   num(c, "radar_hours", 0.5, 24); num(c, "radar_step_minutes", 2, 120);
+  if (!["nowcoast", "nexrad"].includes(c.radar_detail_source)) fail("'radar_detail_source' must be 'nowcoast' or 'nexrad'");
   if (c.radar_source === "nexrad" && c.radar_step_minutes % 5) fail("'radar_step_minutes' must be a multiple of 5 for radar_source nexrad");
+  if (c.radar_source === "auto" && c.radar_detail_source === "nexrad" && c.radar_step_minutes % 5) fail("'radar_step_minutes' must be a multiple of 5 when automatic radar uses NEXRAD");
   num(c, "radar_opacity", 0, 1); num(c, "frame_ms", 100, 5000);
   for (const k of ["show_quakes", "full_height", "show_people", "show_zones", "radar_smoothing", "dark", "show_flow", "show_incidents", "show_radar", "show_home_marker", "autoplay"]) bool(c, k);
   if (typeof c.tomtom_key !== "string") fail("'tomtom_key' must be a string");
-  if (!["nowcoast", "nexrad", "rainviewer"].includes(c.radar_source)) fail("'radar_source' must be 'nowcoast', 'nexrad' or 'rainviewer'");
+  if (!["nowcoast", "nexrad", "rainviewer", "auto"].includes(c.radar_source)) fail("'radar_source' must be 'nowcoast', 'nexrad', 'rainviewer' or 'auto'");
   if (c.flow_style != null && !FLOW_STYLES.includes(c.flow_style)) fail(`'flow_style' must be one of ${FLOW_STYLES.join(", ")}`);
   if (c.incidents_style != null && !INC_STYLES.includes(c.incidents_style)) fail(`'incidents_style' must be one of ${INC_STYLES.join(", ")}`);
   if (typeof c.base_url !== "string" || !/^https:\/\/.+\{z\}.+\{x\}.+\{y\}/.test(c.base_url)) fail("'base_url' must be an https tile URL containing {z}, {x} and {y}");
@@ -127,7 +174,7 @@ ha-card { overflow:hidden; position:relative; }
 .panel button.on { background:#2a7de1; color:#fff; border-color:#2a7de1; }
 .panel label { display:flex; align-items:center; gap:4px; }
 .panel input[type=range] { width:80px; }
-.time { min-width:120px; font-weight:600; font-variant-numeric:tabular-nums; }
+.time { min-width:120px; max-width:100%; font-weight:600; font-variant-numeric:tabular-nums; overflow-wrap:break-word; }
 .note { position:absolute; z-index:1000; top:8px; left:50px; right:8px; background:rgba(255,235,160,.95); color:#222; padding:4px 8px;
   border-radius:6px; font:12px system-ui,sans-serif; }
 .recenter { position:absolute; z-index:1000; top:80px; left:10px; width:34px; height:34px; border-radius:4px; border:2px solid rgba(0,0,0,.2);
@@ -168,9 +215,16 @@ const LABELS = {
   entities: "People to show", show_zones: "Show zones",
   show_quakes: "Earthquakes", quake_min_magnitude: "Min magnitude", quake_radius: "Radius", quake_units: "Units", quake_refresh_minutes: "Quake refresh (min)",
   dark: "Dark map", radar_smoothing: "Smooth NEXRAD", autoplay: "Autoplay radar", show_home_marker: "Home marker",
+  radar_detail_source: "Zoomed-in radar",
 };
 const RADAR_NAMES = { nowcoast: "nowCOAST", nexrad: "NEXRAD", rainviewer: "RainViewer" };
-const radarHelper = (src) => `${RADAR_NAMES[src]} max ${SOURCE_MAX_HOURS[src]} h (longer values are trimmed)`;
+const radarHelper = (src, detail) => {
+  if (src === "auto") {
+    const d = RADAR_NAMES[detail] ? detail : DEFAULTS.radar_detail_source;
+    return `Out: RainViewer max 2 h. In: ${RADAR_NAMES[d]} max ${SOURCE_MAX_HOURS[d]} h. Longer values are trimmed.`;
+  }
+  return `${RADAR_NAMES[src]} max ${SOURCE_MAX_HOURS[src]} h (longer values are trimmed)`;
+};
 const HELPERS = {
   tomtom_key: "Optional. Enables traffic.",
   full_height: "In Layout, turn Auto height on.",
@@ -178,6 +232,8 @@ const HELPERS = {
   show_zones: "Areas like Home or Work (see README)",
   quake_radius: "From home. Empty = worldwide",
   quake_min_magnitude: "Last 24 h, from USGS",
+  radar_detail_source: "From zoom 8, where it has coverage",
+  radar_smoothing: "Iowa NEXRAD only",
 };
 
 function initials(name) { return (name || "?").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join(""); }
@@ -248,6 +304,11 @@ class MapOverlayCard extends HTMLElement {
           { value: "nowcoast", label: "NOAA nowCOAST (US)" },
           { value: "nexrad", label: "NEXRAD Iowa Mesonet (US)" },
           { value: "rainviewer", label: "RainViewer (worldwide)" },
+          { value: "auto", label: "Automatic (by zoom)" },
+        ] } } },
+        { name: "radar_detail_source", selector: { select: { mode: "dropdown", options: [
+          { value: "nexrad", label: "NEXRAD Iowa Mesonet (US)" },
+          { value: "nowcoast", label: "NOAA nowCOAST (US)" },
         ] } } },
         { name: "radar_hours", selector: { number: { min: 0.5, max: 24, step: 0.5, mode: "box" } } },
         { name: "radar_step_minutes", selector: { number: { min: 2, max: 120, step: 1, mode: "box" } } },
@@ -535,10 +596,17 @@ class MapOverlayCard extends HTMLElement {
     if (this._map) return;
     const c = this._config;
     const center = this._center();
+    this._tornDown = false;
     const map = (this._map = L.map(mapEl, { zoomControl: true, attributionControl: true, maxZoom: c.base_max_zoom, minZoom: 1 }).setView(center, Math.min(c.zoom, c.base_max_zoom)));
     this._people = new Map(); this._zones = new Map(); this._circles = new Map(); this._markers = []; this._peopleSig = null; this._peopleData = null;
     this._peopleLayer = L.layerGroup();
     map.on("zoomend", () => this._renderPeople());
+    // Hard zooms wipe tiles on viewprereset, before zoomstart, so the hold has to be taken here.
+    map.on("viewprereset", () => this._freezeRadar());
+    map.on("zoomstart", () => this._freezeRadar());
+    map.on("zoomanim", () => this._thawRadar());
+    map.on("zoomend", () => this._thawWhenReady());
+    map.on("moveend", () => this._syncRadar());
     // Earthquakes: separate layer, never part of people grouping.
     this._quakeLayer = L.layerGroup(); this._quakes = new Map();
     if (c.show_quakes) this._quakeLayer.addTo(map);
@@ -590,7 +658,7 @@ class MapOverlayCard extends HTMLElement {
     root.querySelector(".recenter").addEventListener("click", () => map.setView(this._center() || center, c.zoom));
 
     this._refreshFrames();
-    this._refreshTimer = setInterval(() => this._refreshFrames(), c.radar_refresh_minutes * 60000);
+    this._refreshTimer = setInterval(() => this._refreshFrames(true), c.radar_refresh_minutes * 60000);
     this._updateHome();
     this._updatePeople();
     this._refreshQuakes();
@@ -599,13 +667,20 @@ class MapOverlayCard extends HTMLElement {
   }
 
   _teardown() {
+    this._tornDown = true;
+    this._radarGen = (this._radarGen || 0) + 1;
+    this._radarAbort?.abort(); this._radarAbort = null;
+    clearTimeout(this._handoffTimer); this._handoffTimer = null;
     clearInterval(this._refreshTimer); clearInterval(this._animTimer); clearInterval(this._trafficTimer);
     clearInterval(this._quakeTimer); this._quakeTimer = null; this._quakeLayer = null; this._quakes = new Map();
     this._refreshTimer = this._animTimer = this._trafficTimer = null;
     this._people = new Map(); this._zones = new Map(); this._circles = new Map(); this._markers = []; this._peopleLayer = null; this._peopleSig = null;
     this._ro?.disconnect(); this._ro = null;
+    this._thawRadar();
+    if (this._radarIncoming) { const leftover = this._radarIncoming; this._radarIncoming = null; this._discardRadar(leftover); }
     if (this._map) { this._map.remove(); this._map = null; }
-    this._frames = []; this._home = null; this._built = false; this._pendingInit = null;
+    this._frames = []; this._radarShown = null; this._radarPending = null; this._radarCache = null; this._radarIncoming = null;
+    this._home = null; this._built = false; this._pendingInit = null;
   }
 
   _buildPanel(p) {
@@ -633,16 +708,94 @@ class MapOverlayCard extends HTMLElement {
 
   _toggle(layer) { if (this._map.hasLayer(layer)) { this._map.removeLayer(layer); return false; } layer.addTo(this._map); return true; }
 
-  async _frameTimes() {
+  _resolvedSource() {
     const c = this._config;
-    if (c.radar_source === "rainviewer") {
-      const r = await fetch(RV_API, { cache: "no-store" });
+    if (c.radar_source !== "auto") return c.radar_source;
+    if (!this._map) return "rainviewer";
+    const z = this._map.getZoom();
+    const ctr = this._map.getCenter();
+    if (z >= RADAR_AUTO_ZOOM && radarCovers(c.radar_detail_source, ctr.lat, ctr.lng)) return c.radar_detail_source;
+    return "rainviewer";
+  }
+
+  // Keep the current radar picture on screen across a hard zoom. A one-step animated
+  // zoom scales the live tiles, so that snapshot is removed in zoomanim.
+  _freezeRadar() {
+    const frame = this._frames?.[this._idx];
+    const root = frame?.layer?.getContainer?.();
+    if (!root || !this._map || !this._radarOn) return;
+    const mapEl = this._map.getContainer();
+    const mapRect = mapEl.getBoundingClientRect();
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const canvas = document.createElement("canvas");
+    canvas.className = "radar-hold";
+    canvas.width = Math.max(1, Math.round(mapRect.width * dpr));
+    canvas.height = Math.max(1, Math.round(mapRect.height * dpr));
+    canvas.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;z-index:450;pointer-events:none;";
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    let drew = false;
+    for (const img of root.querySelectorAll("img.leaflet-tile")) {
+      if (!img.complete || !img.naturalWidth) continue;
+      const r = img.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) continue;
+      let op = 1, n = img;
+      while (n && n !== mapEl) {
+        const s = getComputedStyle(n);
+        op *= parseFloat(s.opacity);
+        if (s.visibility === "hidden" || s.display === "none") { op = 0; break; }
+        n = n.parentElement;
+      }
+      if (!(op > 0.05)) continue;
+      ctx.globalAlpha = Math.min(1, op);
+      try { ctx.drawImage(img, r.left - mapRect.left, r.top - mapRect.top, r.width, r.height); drew = true; }
+      catch (e) { /* a tile that cannot be drawn is skipped; the live layer remains */ }
+    }
+    if (!drew) return;
+    this._thawRadar();
+    mapEl.appendChild(canvas);
+    this._holdCanvas = canvas;
+  }
+
+  _thawRadar() {
+    this._holdCanvas?.remove();
+    this._holdCanvas = null;
+  }
+
+  _thawWhenReady() {
+    if (!this._holdCanvas || !this._map) return;
+    if (this._resolvedSource() !== this._radarShown) return; // the source switch removes it when the new frame is up
+    const layer = this._frames?.[this._idx]?.layer;
+    const gone = () => { if (this._holdCanvas && this._resolvedSource() === this._radarShown) this._thawRadar(); };
+    if (layer?._loading) layer.once("load", gone);
+    else requestAnimationFrame(() => requestAnimationFrame(gone));
+  }
+
+  _syncRadar() {
+    if (this._tornDown || !this._map) return;
+    const source = this._resolvedSource();
+    if (this._radarPending === source) return;
+    this._refreshFrames(false);
+  }
+
+  async _frameTimes(source, signal) {
+    const c = this._config;
+    if (source === "rainviewer") {
+      const r = await fetch(RV_API, { cache: "no-store", signal });
       if (!r.ok) throw new Error(`RainViewer HTTP ${r.status}`);
       const d = await r.json();
-      return (d.radar?.past || []).map((f) => ({ key: f.path, time: new Date(f.time * 1000), url: `${d.host}${f.path}/256/{z}/{x}/{y}/2/1_1.png` }));
+      const size = (window.devicePixelRatio || 1) >= 2 ? 512 : 256;
+      let frames = (d.radar?.past || []).map((f) => ({ key: f.path, time: new Date(f.time * 1000), url: `${d.host}${f.path}/${size}/{z}/{x}/{y}/2/1_1.png` }));
+      // Plain RainViewer keeps every frame the API returns. Automatic mode honors radar history.
+      if (c.radar_source === "auto") {
+        const cutoff = Date.now() - this._hours(source) * 3600000;
+        const trimmed = frames.filter((f) => +f.time >= cutoff - 60000);
+        if (trimmed.length >= 2) frames = trimmed;
+      }
+      return frames;
     }
-    if (c.radar_source === "nowcoast") {
-      const r = await fetch(NOWCOAST_CAPS, { cache: "no-store" });
+    if (source === "nowcoast") {
+      const r = await fetch(NOWCOAST_CAPS, { cache: "no-store", signal });
       if (!r.ok) throw new Error(`nowCOAST HTTP ${r.status}`);
       const xml = new DOMParser().parseFromString(await r.text(), "text/xml");
       let dim = null;
@@ -659,7 +812,7 @@ class MapOverlayCard extends HTMLElement {
       if (!avail.length) throw new Error("nowCOAST: empty time list");
       const latest = +avail[avail.length - 1];
       const step = c.radar_step_minutes * 60000;
-      const n = Math.max(2, Math.floor((this._hours() * 3600000) / step) + 1);
+      const n = Math.max(2, Math.floor((this._hours(source) * 3600000) / step) + 1);
       const picked = [];
       for (let i = n - 1; i >= 0; i--) {
         const target = latest - i * step;
@@ -673,46 +826,122 @@ class MapOverlayCard extends HTMLElement {
     // NEXRAD (Iowa Environmental Mesonet): 5-minute composites, ~5-10 min latency.
     const step = c.radar_step_minutes * 60000;
     const latest = Math.floor((Date.now() - 10 * 60000) / 300000) * 300000;
-    const n = Math.max(2, Math.floor((this._hours() * 3600000) / step) + 1);
+    const n = Math.max(2, Math.floor((this._hours(source) * 3600000) / step) + 1);
     const out = [];
     for (let i = n - 1; i >= 0; i--) { const t = new Date(latest - i * step); out.push({ key: t.toISOString(), time: t }); }
     return out;
   }
 
-  _hours() { return Math.min(this._config.radar_hours, SOURCE_MAX_HOURS[this._config.radar_source] || 24); }
+  _hours(source) { return Math.min(this._config.radar_hours, SOURCE_MAX_HOURS[source] || 24); }
 
-  _makeLayer(f) {
-    if (this._config.radar_source === "rainviewer") {
-      return L.tileLayer(f.url, { opacity: 0, zIndex: 400, maxNativeZoom: 7, maxZoom: 19, attribution: 'Weather data by <a href="https://www.rainviewer.com">RainViewer</a>' });
+  _makeLayer(f, source) {
+    const common = { opacity: 0, zIndex: 400 };
+    if (source === "rainviewer") {
+      return sharpRadarLayer(L.tileLayer(f.url, { ...common, maxNativeZoom: 7, maxZoom: 19, tileSize: 256, attribution: RADAR_ATTR.rainviewer }));
     }
-    if (this._config.radar_source === "nowcoast") {
-      return L.tileLayer.wms(NOWCOAST_WMS, {
-        layers: NOWCOAST_LAYER, format: "image/png", transparent: true, version: "1.1.1", tileSize: 512,
-        time: f.key.replace(/\.\d{3}Z$/, "Z"), opacity: 0, zIndex: 400,
-        attribution: 'Radar: <a href="https://nowcoast.noaa.gov/">NOAA nowCOAST</a>',
-      });
+    if (source === "nowcoast") {
+      return sharpRadarLayer(L.tileLayer.wms(NOWCOAST_WMS, {
+        ...common, layers: NOWCOAST_LAYER, format: "image/png", transparent: true, version: "1.1.1", tileSize: 512,
+        time: f.key.replace(/\.\d{3}Z$/, "Z"), attribution: RADAR_ATTR.nowcoast,
+      }));
     }
-    return L.tileLayer.wms(NEXRAD_WMS, {
-      className: this._config.radar_smoothing ? "radar-smooth" : "",
+    return sharpRadarLayer(L.tileLayer.wms(NEXRAD_WMS, {
+      ...common, className: this._config.radar_smoothing ? "radar-smooth" : "",
       layers: "nexrad-n0q-wmst", format: "image/png", transparent: true, version: "1.1.1", tileSize: 512, zoomOffset: 0,
-      time: f.key.replace(/\.\d{3}Z$/, "Z"), opacity: 0, zIndex: 400,
-      attribution: 'NEXRAD radar: <a href="https://mesonet.agron.iastate.edu/">Iowa Environmental Mesonet</a>',
-    });
+      time: f.key.replace(/\.\d{3}Z$/, "Z"), attribution: RADAR_ATTR.nexrad,
+    }));
   }
 
-  async _refreshFrames() {
+  async _framesFor(source, force, signal) {
+    const ttl = this._config.radar_refresh_minutes * 60000;
+    const hit = this._radarCache?.get(source);
+    if (!force && hit && Date.now() - hit.at < ttl) return hit.list.map((f) => ({ ...f, time: new Date(f.time) }));
+    const list = await this._frameTimes(source, signal);
+    this._radarCache = this._radarCache || new Map();
+    this._radarCache.set(source, { at: Date.now(), list: list.map((f) => ({ key: f.key, url: f.url, time: +f.time })) });
+    return list;
+  }
+
+  _discardRadar(frames) {
     if (!this._map) return;
+    for (const f of frames) if (f.layer && !this._frames.includes(f)) this._map.removeLayer(f.layer);
+  }
+
+  async _refreshFrames(force) {
+    if (this._tornDown || !this._map) return;
+    const source = this._resolvedSource();
+    clearTimeout(this._handoffTimer); this._handoffTimer = null;
+    if (this._radarIncoming) { const leftover = this._radarIncoming; this._radarIncoming = null; this._discardRadar(leftover); }
+    this._radarGen = (this._radarGen || 0) + 1;
+    const gen = this._radarGen;
+    this._radarAbort?.abort();
+    const ac = (this._radarAbort = new AbortController());
+    this._radarPending = source;
     let list;
-    try { list = await this._frameTimes(); } catch (e) { console.warn("map-overlay-card: radar frame list failed", e); if (this._timeEl) this._timeEl.textContent = "Radar unavailable"; return; }
-    if (!this._map) return;
-    const old = new Map(this._frames.map((f) => [f.key, f]));
-    const next = list.map((f) => old.get(f.key) || { ...f, layer: this._makeLayer(f) });
-    for (const f of this._frames) if (!next.includes(f)) this._map.removeLayer(f.layer);
-    for (const f of next) if (!this._map.hasLayer(f.layer)) f.layer.addTo(this._map); // preload (opacity 0)
-    this._frames = next;
-    this._idx = Math.min(this._idx, next.length - 1);
-    if (!this._playing) this._idx = next.length - 1;
-    this._show(this._idx);
+    try { list = await this._framesFor(source, force === true, ac.signal); }
+    catch (e) {
+      if (ac.signal.aborted || gen !== this._radarGen || this._tornDown) return;
+      this._radarPending = this._radarShown;
+      console.warn("map-overlay-card: radar frame list failed", e);
+      if (this._timeEl && !this._frames.length) this._timeEl.textContent = "Radar unavailable";
+      return;
+    }
+    if (this._tornDown || !this._map || gen !== this._radarGen) return;
+    const switching = this._radarShown != null && this._radarShown !== source && this._frames.length > 0;
+    if (switching && !list.length) { this._radarPending = this._radarShown; if (this._timeEl) this._timeEl.textContent = "Radar unavailable"; return; }
+    const reuse = new Map((switching ? [] : this._frames).map((f) => [f.key, f]));
+    const next = list.map((f) => reuse.get(f.key) || { ...f, source, layer: this._makeLayer(f, source) });
+    const showAt = switching ? this._matchFrame(next) : Math.min(this._idx, Math.max(0, next.length - 1));
+    const ordered = next[showAt] ? [next[showAt], ...next.filter((_, i) => i !== showAt)] : next;
+    const layer = next[showAt]?.layer;
+    const wait = Boolean(switching && this._radarOn && layer);
+    const commit = () => {
+      if (this._radarIncoming === next) this._radarIncoming = null;
+      if (this._tornDown || !this._map || gen !== this._radarGen) { this._discardRadar(next); return; }
+      const drop = this._frames.filter((f) => !next.includes(f));
+      this._frames = next;
+      this._radarShown = source;
+      this._radarPending = source;
+      this._idx = !switching && !this._playing ? Math.max(0, next.length - 1) : showAt;
+      this._show(this._idx);
+      for (const f of drop) this._map.removeLayer(f.layer);
+      // Leave the held picture up for this paint, then drop it once the new tiles are on screen.
+      requestAnimationFrame(() => { if (gen === this._radarGen) this._thawRadar(); });
+    };
+    if (wait) {
+      this._radarIncoming = next;
+      let started = false;
+      const go = () => {
+        if (started) return;
+        started = true;
+        clearTimeout(this._handoffTimer); this._handoffTimer = null;
+        const finish = () => {
+          if (gen !== this._radarGen || this._tornDown || !this._map) {
+            if (this._radarIncoming === next) this._radarIncoming = null;
+            this._discardRadar(next);
+            return;
+          }
+          commit();
+        };
+        // One frame for tile opacity, then the next frame swaps so the old picture stays up until the new one is drawn.
+        requestAnimationFrame(() => requestAnimationFrame(finish));
+      };
+      layer.once("load", go);
+      this._handoffTimer = setTimeout(go, 8000);
+    }
+    for (const f of ordered) if (!this._map.hasLayer(f.layer)) f.layer.addTo(this._map);
+    if (!wait) commit();
+  }
+
+  // Keep the loop on the closest time so a source switch doesn't jump to the start.
+  _matchFrame(next) {
+    if (!next.length) return 0;
+    const cur = this._frames[this._idx]?.time;
+    if (!cur) return next.length - 1;
+    if (!this._playing && this._idx === this._frames.length - 1) return next.length - 1;
+    let best = 0;
+    for (let i = 1; i < next.length; i++) if (Math.abs(+next[i].time - +cur) < Math.abs(+next[best].time - +cur)) best = i;
+    return best;
   }
 
   _show(i) {
@@ -725,7 +954,10 @@ class MapOverlayCard extends HTMLElement {
     this._idx = i;
     this._frames.forEach((f, j) => f.layer.setOpacity(this._radarOn && j === i ? this._opacity : 0));
     const f = this._frames[i];
-    if (this._timeEl && this._radarOn) this._timeEl.textContent = f.time.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }) + (i === this._frames.length - 1 ? " (latest)" : "");
+    if (this._timeEl && this._radarOn) {
+      const who = this._config.radar_source === "auto" && this._radarShown ? ` · ${RADAR_NAMES[this._radarShown]}` : "";
+      this._timeEl.textContent = f.time.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }) + (i === this._frames.length - 1 ? " (latest)" : "") + who;
+    }
   }
 
   _restartAnim() {
@@ -757,7 +989,7 @@ class MapOverlayCard extends HTMLElement {
 // Visual editor: HA's ha-form, but shown with the effective defaults filled in.
 // Only keys the user actually changes (or already had) are written back, so the
 // saved config stays minimal and never gains home coordinates unless the pin is set.
-const FORM_DEFAULT_KEYS = ["zoom", "height", "radar_source", "radar_hours", "radar_step_minutes", "radar_opacity",
+const FORM_DEFAULT_KEYS = ["zoom", "height", "radar_source", "radar_detail_source", "radar_hours", "radar_step_minutes", "radar_opacity",
   "traffic_refresh_minutes", "radar_refresh_minutes", "show_radar", "show_flow", "show_incidents", "show_people",
   "show_zones", "show_quakes", "quake_min_magnitude", "quake_refresh_minutes", "quake_units", "full_height", "dark", "autoplay", "show_home_marker", "radar_smoothing"];
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -796,7 +1028,14 @@ class MapOverlayCardEditor extends HTMLElement {
     const f = MapOverlayCard.getConfigForm();
     // Radar history max follows the selected source.
     const src = this._config.radar_source || DEFAULTS.radar_source;
-    const fix = (sch) => sch.map((x) => (x.schema ? { ...x, schema: fix(x.schema) } : x.name === "radar_hours" ? { ...x, selector: { number: { ...x.selector.number, max: SOURCE_MAX_HOURS[src] } } } : x));
+    const detail = this._config.radar_detail_source || DEFAULTS.radar_detail_source;
+    const hoursSrc = src === "auto" ? detail : src;
+    const fix = (sch) => sch.flatMap((x) => {
+      if (x.schema) return [{ ...x, schema: fix(x.schema) }];
+      if (x.name === "radar_detail_source" && src !== "auto") return [];
+      if (x.name === "radar_hours") return [{ ...x, selector: { number: { ...x.selector.number, max: SOURCE_MAX_HOURS[hoursSrc] } } }];
+      return [x];
+    });
     f.schema = fix(f.schema);
     // Radius unit follows quake_units.
     const unit = (this._config.quake_units || DEFAULTS.quake_units) === "metric" ? "km" : "mi";
@@ -813,7 +1052,7 @@ class MapOverlayCardEditor extends HTMLElement {
     const lab = f.computeLabel;
     const labelFn = (x) => (x.name?.startsWith("pname:") ? `${fname(x.name.slice(6))}: name` : x.name?.startsWith("pimg:") ? `${fname(x.name.slice(5))}: picture` : lab(x));
     const baseHelper = f.computeHelper;
-    f.computeHelper = (x) => (x.name === "radar_hours" ? radarHelper(src) : baseHelper(x));
+    f.computeHelper = (x) => (x.name === "radar_hours" ? radarHelper(src, detail) : x.name === "radar_source" && src === "auto" ? "RainViewer out, US radar from zoom 8" : baseHelper(x));
     if (!this._form) {
       this._form = document.createElement("ha-form");
       this._form.addEventListener("value-changed", (ev) => {
@@ -843,7 +1082,7 @@ class MapOverlayCardEditor extends HTMLElement {
     this._form.computeHelper = (x) => (x.name?.startsWith("pname:") ? "Empty = entity name" : x.name === "_loader" ? "" : f.computeHelper(x));
     this._form.hass = this._hass;
     const data = formData(this._config);
-    data.radar_hours = this._shownHours = Math.min(data.radar_hours, SOURCE_MAX_HOURS[src]);
+    data.radar_hours = this._shownHours = Math.min(data.radar_hours, SOURCE_MAX_HOURS[hoursSrc]);
     delete data.people;
     for (const id of ids) data[`pname:${id}`] = this._nameDraft?.[id] ?? this._config.people?.[id]?.name ?? "";
     this._renderPics();
