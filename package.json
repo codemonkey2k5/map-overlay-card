@@ -1,6 +1,6 @@
 {
   "name": "map-overlay-card",
-  "version": "0.3.6",
+  "version": "0.4.0",
   "description": "Home Assistant Lovelace card: one Leaflet map with TomTom traffic and animated weather radar",
   "license": "MIT",
   "private": true,

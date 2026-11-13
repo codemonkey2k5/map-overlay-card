@@ -6,7 +6,7 @@ A Home Assistant dashboard card that puts traffic, weather radar, people and ear
 
 ## What it does
 
-- Animated weather radar with play/pause, speed and opacity (NOAA nowCOAST, Iowa Mesonet NEXRAD or RainViewer; no API key needed)
+- Animated weather radar with play/pause, speed and opacity (NOAA nowCOAST, Iowa Mesonet NEXRAD, RainViewer, or automatic; no API key needed)
 - Live traffic flow and incidents from TomTom (free API key required)
 - People and device trackers as name pills with their name and picture (you can override both)
 - Earthquakes from the last 24 hours (USGS), colored by magnitude, with full details on tap
@@ -44,6 +44,8 @@ The free tier covers 50,000 traffic tile requests a day. The key is stored in yo
 
 ### Radar
 Press play to loop the last few hours. The label shows the time of each frame. Speed and opacity sit next to it. With radar off, the label shows when the map was last updated.
+
+With Radar source set to Automatic, zooming out uses RainViewer and zooming to 8 or closer uses Iowa NEXRAD where US radar covers. Set Zoomed-in radar to nowCOAST if you want that instead. The time label shows which source is on. Play keeps going, on the same frame time. Past US radar coverage, including well offshore, it stays on RainViewer. A high-resolution screen loads 512px RainViewer tiles.
 
 ### Traffic flow
 ![Traffic flow](docs/images/traffic-flow.png)
@@ -89,7 +91,8 @@ In a sections view the card starts full width and fills the screen height (**Ful
 | Dark map | `dark` | off | Dark base map |
 | Home marker | `show_home_marker` | on | Dot at your home zone |
 | Radar | `show_radar` | on | Radar on when the map opens |
-| Radar source | `radar_source` | `nowcoast` | `nowcoast` (US), `nexrad` (US), `rainviewer` (worldwide) |
+| Radar source | `radar_source` | `nowcoast` | `nowcoast` (US), `nexrad` (US), `rainviewer` (worldwide), `auto` |
+| Zoomed-in radar | `radar_detail_source` | `nexrad` | With `auto`: `nexrad` or `nowcoast` from zoom 8 up |
 | Radar history (h) | `radar_hours` | 3 | Loop length; max nowCOAST 8, NEXRAD 24, RainViewer 2 |
 | Frame step (min) | `radar_step_minutes` | 10 | Minutes between frames |
 | Radar opacity | `radar_opacity` | 0.6 | 0 to 1 |
